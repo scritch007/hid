@@ -191,6 +191,53 @@ func (dev *Device) Write(b []byte) (int, error) {
 	return written, nil
 }
 
+// WriteFeature sends an output report to a HID Feature.
+//
+// WriteFeature will send the data on the first OUT endpoint, if one exists. If it does
+// not, it will send the data through the Control Endpoint (Endpoint 0).
+func (dev *Device) WriteFeature(id byte, b []byte) (int, error) {
+	// Abort if nothing to write
+	if len(b) == 0 {
+		return 0, nil
+	}
+	b = append([]byte{id}, b...)
+	// Abort if device closed in between
+	dev.lock.Lock()
+	device := dev.device
+	dev.lock.Unlock()
+
+	if device == nil {
+		return 0, ErrDeviceClosed
+	}
+	// Prepend a HID report ID on Windows, other OSes don't need it
+	var report []byte
+	if runtime.GOOS == "windows" {
+		report = append([]byte{0x00}, b...)
+	} else {
+		report = b
+	}
+	// Execute the write operation
+	written := int(C.hid_send_feature_report(device, (*C.uchar)(&report[0]), C.size_t(len(report))))
+	if written == -1 {
+		// If the write failed, verify if closed or other error
+		dev.lock.Lock()
+		device = dev.device
+		dev.lock.Unlock()
+
+		if device == nil {
+			return 0, ErrDeviceClosed
+		}
+		// Device not closed, some other error occurred
+		message := C.hid_error(device)
+		if message == nil {
+			return 0, errors.New("hidapi: unknown failure")
+		}
+		failure, _ := wcharTToString(message)
+		return 0, errors.New("hidapi: " + failure)
+	}
+	return written, nil
+}
+
 // SendFeatureReport sends a feature report to a HID device
 //
 // Feature reports are sent over the Control endpoint as a Set_Report transfer.
